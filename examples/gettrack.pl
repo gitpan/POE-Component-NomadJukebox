@@ -1,6 +1,10 @@
 #!/usr/bin/perl
 
+$|++;
+
 use POE qw(Component::NomadJukebox);
+
+die "$0 <file>\n" unless ($ARGV[0] =~ m/^\d+$/ && $ARGV[1]);
 
 POE::Session->create(
 	inline_states => {
@@ -15,43 +19,46 @@ POE::Session->create(
 			$kernel->post(njb => 'discover');
 		},
 		njb_discover => sub {
-			my ($kernel, $heap, $dev, $names) = @_[KERNEL, HEAP, ARG0, ARG1];
+			my ($kernel, $heap, $dev) = @_[KERNEL, HEAP, ARG0];
 
 			unless (ref($dev)) {
 				print "failed to find nomad\n";
 				$kernel->post(njb => 'shutdown');
 				return;
 			}
-			
+		
 			print "opening $dev->[0]->{DEVID}\n";
 		
 			$kernel->post(njb => 'open' => $dev->[0]->{DEVID});
 		},
 		njb_opened => sub {
 			my ($kernel, $heap) = @_[KERNEL, HEAP];
+			
 			if ($_[ARG1]) {
 				print "opened ".ref($_[ARG1])."\n";
-				$kernel->post(njb => 'track_list' => $ARGV[0]);
+				$kernel->post(njb => get_track => { ID => $ARGV[0], } => $ARGV[1]) ;
 			} else {
 				$kernel->post(njb => 'shutdown');
 			}
 		},
-		njb_track_list => sub {
-			my ($kernel, $heap, $tracks) = @_[KERNEL, HEAP, ARG0];
-	
-			unless (ref($tracks) eq 'ARRAY') {
-				print "Failed to get tracks\n";
+		njb_get_track => sub {
+			my ($kernel, $heap) = @_[KERNEL, HEAP];
+		
+			$kernel->post(njb => 'shutdown');
+		
+			unless ($_[ARG2]) {
+				print "get failed ".$_[ARG2]."\n";
 				return;
 			}
-			print "Got ".scalar(@$tracks)." tracks\n";
-			require Data::Dumper;
-			print Data::Dumper->Dump([$tracks]);
-			$kernel->post(njb => 'shutdown');
+			
+			print "\nrecieve ok to $ARGV[1]\n";
 		},
 		njb_closed => sub {
-			my ($kernel, $heap) = @_[KERNEL, HEAP];
-			
 			print "closed\n";
+		},
+		njb_progress => sub {
+			my ($sofar, $total) = @_[ARG0,ARG1];
+			print "[$sofar/$total]\n";
 		},
 	}
 );

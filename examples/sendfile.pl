@@ -27,16 +27,16 @@ POE::Session->create(
 				return;
 			}
 		
-			print "opening $dev->[0]\n";
+			print "opening $dev->[0]->{DEVID}\n";
 		
-			$kernel->post(njb => 'open' => $dev->[0]);
+			$kernel->post(njb => 'open' => $dev->[0]->{DEVID});
 		},
 		njb_opened => sub {
 			my ($kernel, $heap) = @_[KERNEL, HEAP];
 			
 			if ($_[ARG1]) {
 				print "opened ".ref($_[ARG1])."\n";
-				$kernel->post(njb => send_file => { FILE => $ARGV[0], name => $ARGV[0] }) ;
+				$kernel->post(njb => send_file => { FILE => $ARGV[0], NAME => $ARGV[0] }) ;
 			} else {
 				$kernel->post(njb => 'shutdown');
 			}

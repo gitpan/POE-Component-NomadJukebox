@@ -16,7 +16,7 @@ use POE::Component::NomadJukebox::Device qw(Discover Open ProgressFunc);
 use MP3::Tag;
 use Carp qw(croak);
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 # our device constants
 #sub NJB_DEVICE_NJB1 { 0x00 }
@@ -139,6 +139,7 @@ sub create {
 				delete_file		=> 'delete_file',
 				send_track		=> 'send_track',
 				send_file		=> 'send_file',
+				get_file		=> 'get_file',
 				play			=> 'play',
 				stop			=> 'stop',
 				pause			=> 'pause',
@@ -203,13 +204,15 @@ sub _progress {
 
 =head1 EVENTS
 
+All these events can be called with $kernel->call(), and the return values
+are usually undef on error, or an id in the case of send_track or send_file.
+
 =head2 discover
 
 Locates all connected, and turned on, Nomad Jukebox devices.
 Fires njb_discover event with an array ref of hash refs with info about each
 device in the keys to the parent session or undef if it failed to find any
-devices.  This event can also be called, it will return an array or undef if
-non were found.
+devices. 
 
 =cut
 
@@ -256,7 +259,7 @@ This will open the device specified by the device_id from the discover event.
 You MUST do this before sending any other events that operate on the device.
 This fires the njb_opened event to the parent on success with the device id as
 ARG0 and 1 as ARG1.  On failure to open the device, ARG1 for the njb_open event
-will be undef.  This event can also be called, it returns the return value only.
+will be undef.
 
 =cut
 
@@ -292,8 +295,9 @@ sub open {
 
 Requests the track list from the device.  It fires njb_track_list with an
 array ref of hash refs.  Each hash ref has info about the track.  ID is
-the important key for other events like play, and get_track.  This event 
-can also be called, it returns the same.
+the important key for other events like play, and get_track.  If you pass
+a 1 as ARG0 to track_list, extended tags will be turned on, but it will
+be much slower. (AND IT BLOCKS LONGER)
 
 =cut
 
@@ -302,7 +306,7 @@ sub track_list {
 
 	return undef unless ($heap->{njb});
 
-	my $tracks = [$heap->{njb}->TrackList()];
+	my $tracks = [$heap->{njb}->TrackList($_[ARG0])];
 
 	$kernel->post($heap->{reply} => 'njb_track_list' => $tracks);
 
@@ -315,18 +319,19 @@ sub track_list {
 
 Requests the play list from the device.  It fires njb_play_list with an
 array ref of hash refs.  Each hash ref has info about the track.  ID is
-the important key for other events like play, and get_track.  This event 
-can also be called, it returns the same.
-
+the important key for other events like play, and get_track.
 
 Here's an example of a playlist dump, notice that I have a playlist with
 no valid tracks.  Make sure you account for these end cases.  The array
-in the TRACKS key is a list of track ID's from the track_list.
+in the TRACKS key is a list of track ID's from the track_list.  The STATE
+key 0 is new, 1 is unchanged, 2 is change name, 3 change tracks.  I'm not
+sure what 2 and 3 mean yet.
 
 	{
 		'TRACKS' => [],
 		'ID' => 71520,
-		'TAG' => 140503840
+		'NAME' => 'Audio Tour',
+		'STATE' => 1
 	},
 	{
 		'TRACKS' => [
@@ -342,7 +347,8 @@ in the TRACKS key is a list of track ID's from the track_list.
 			511915
 		],
 		'ID' => 727376,
-		'TAG' => 141851304
+		'NAME' => 'aaa',
+		'STATE' => 3
 	}
 
 =cut
@@ -365,8 +371,7 @@ sub play_list {
 
 Requests the file list from the device.  It fires njb_file_list with an
 array ref of hash refs.  Each hash ref has info about the file.  ID is
-the important key for other events like get_file, delete_file.  This event 
-can also be called, it returns the same.
+the important key for other events like get_file, delete_file.
 
 =cut
 
@@ -388,7 +393,9 @@ sub file_list {
 
 This event will retrieve the track specified by the track hashref from the 
 track_list event and it will save it to the path specified.  The full
-directory path should exist, it will not create it for you.
+directory path should exist, it will not create it for you.  The track hash
+ref should have the TAG key (for speed) or the ID key, all others are not
+used.
 
 =cut
 
@@ -399,8 +406,8 @@ sub get_track {
 
 	my $ret = $heap->{njb}->GetTrack(@_[ARG0,ARG1]);
 
-	$kernel->post($heap->{reply} => 'njb_get_track_done' => (@_[ARG0,ARG1],$ret));
-	return (@_[ARG0,ARG1],$ret);
+	$kernel->post($heap->{reply} => 'njb_get_track' => (@_[ARG0,ARG1],$ret));
+	return $ret;
 }
 
 =pod
@@ -408,7 +415,7 @@ sub get_track {
 =head2 close
 
 Releases control of the device.  You probably want to use the shutdown event.
-This fires the njb_closed event to the parent.  It Can be called also.
+This fires the njb_closed event to the parent.
 
 =cut
 
@@ -430,7 +437,6 @@ sub close {
 
 Allows you to set the owner's name.  Fires njb_set_owner with
 the owner info sent in ARG0 and the return value in ARG1.
-It also can be called but you only get the return value.
 
 =cut
 
@@ -448,8 +454,7 @@ sub set_owner {
 
 =head2 get_owner
 
-Fires njb_owner event back to parent with owner info in ARG0, or it can be
-called like so: my $owner = $kernel->call(njb => 'get_owner');
+Fires njb_owner event back to parent with owner info in ARG0.
 
 =cut
 
@@ -481,8 +486,7 @@ you can specify them yourself with a hashref with the following keys:
 
 It will fire the send_track event to the parent session with the track info in
 a hash ref as ARG0 and the trackid as ARG1 on success.  On failure ARG1 will
-be undef and ARG2 _might_ have an error string.  This event can be called, and
-it will return the trackid on success or undef on failure.
+be undef and ARG2 _might_ have an error string.
 
 =cut
 
@@ -543,8 +547,7 @@ sub send_track {
 
 This will send a file to the Nomad Jukebox.  It will fire event njb_send_file
 with the file hash ref as ARG0 and the fileid as ARG1.  On failure, ARG1 will
-be undef, and ARG2 _might_ have an error string.  This event can be called,
-and it will return the fileid on success or undef on failure.
+be undef, and ARG2 _might_ have an error string.
 
 =cut
 
@@ -579,11 +582,34 @@ sub send_file {
 
 =pod
 
+=head2 get_file => { ID => <ID> } => </path/to/file.tar.gz>
+
+This event will retrieve the file specified by the ID in the hash ref  
+and it will save it to the path specified.  The full directory path should
+exist, it will not create it for you.  I used a hash ref so I could expand
+the file selection at a later time, (ie. by NAME). It fires njb_get_file 
+with the hash ref as ARG0 the file path as ARG1 and the return value as ARG2.
+
+=cut
+
+sub get_file {
+	my ($kernel, $heap) = @_[KERNEL,HEAP];
+
+	return undef unless ($heap->{njb});
+
+	my $ret = $heap->{njb}->GetFile(@_[ARG0,ARG1]);
+
+	$kernel->post($heap->{reply} => 'njb_get_file' => (@_[ARG0,ARG1],$ret));
+	return $ret;
+}
+
+=pod
+
 =head2 play => <ID>
 
 Starts a track specified by <ID> you can get this id by looking at the ID key
 of a track in the track list.  See the track_list event.  Fires njb_play event
-back to parent session.
+back to parent session.  ARG0 is the <ID> and ARG1 is the return value.
 
 =cut
 
@@ -603,7 +629,8 @@ sub play {
 
 =head2 stop
 
-Stops playback, and it fires njb_stop event back to parent session.
+Stops playback, and it fires njb_stop event back to parent session.  The
+return value is in ARG0.
 
 =cut
 
@@ -623,7 +650,8 @@ sub stop {
 
 =head2 pause
 
-Pauses playback, and it fires njb_pause event back to parent session.
+Pauses playback, and it fires njb_pause event back to parent session. The
+return value is in ARG0.
 
 =cut
 
@@ -643,7 +671,8 @@ sub pause {
 
 =head2 resume
 
-Resumes playback, and it fires njb_resume event back to parent session.
+Resumes playback, and it fires njb_resume event back to parent session. The
+return value is in ARG0.
 
 =cut
 
@@ -686,7 +715,6 @@ sub seek_track {
 
 Allows you to set the temp directory.  Fires njb_set_tmpdir with
 the temp dir in ARG0 and the return value in ARG1.
-It also can be called but you only get the return value.
 
 =cut
 
@@ -704,8 +732,7 @@ sub set_tmpdir {
 
 =head2 get_tmpdir
 
-Fires njb_tmpdir event back to parent with temp dir in ARG0, or it can be
-called like so: my $dir = $kernel->call(njb => 'get_tmpdir');
+Fires njb_tmpdir event back to parent with temp dir in ARG0.
 
 =cut
 
@@ -745,7 +772,6 @@ sub shutdown {
 
 Allows you to delete a playlist.  Fires njb_delete_play_list with
 the playlist id in ARG0 and the return value in ARG1.
-It also can be called but you only get the return value.
 
 =cut
 
@@ -765,7 +791,6 @@ sub delete_play_list {
 
 Allows you to delete a track.  Fires njb_delete_track with
 the playlist id in ARG0 and the return value in ARG1.
-It also can be called but you only get the return value.
 
 =cut
 
@@ -784,8 +809,7 @@ sub delete_track {
 =head2 delete_file => <fileid>
 
 Allows you to delete a file.  Fires njb_delete_file with
-the file id in ARG0 and the return value in ARG1.
-It also can be called but you only get the return value.
+ehe file id in ARG0 and the return value in ARG1.
 
 =cut
 
@@ -830,9 +854,8 @@ sub disk_usage {
 =head2 adjust_sound => <type> => <value>
 
 Changes various aspects of sound from the device.  It fires njb_adjust_sound
-with the return value.  This event can also be called.
-The types: volume, bass, treble, muting, midrange, midfreq, eax, eaxamt,
-headphone, rear, and eqstatus
+with the return value. The types: volume, bass, treble, muting, midrange,
+midfreq, eax, eaxamt, headphone, rear, and eqstatus.
 **NOTE: only volume is supported by libnjb, so don't expect any of the others
 to work until somone updates libnjb with this ability.
 

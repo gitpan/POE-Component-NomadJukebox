@@ -29,13 +29,14 @@ static AV* track_hash;
 //static AV *njb_Discover	( void );
 static AV *Discover			( void );
 static SV *Open				( SV* device );
-static AV *TrackList		( SV* device );
+static AV *TrackList		( SV* device, int extended );
 static AV *PlayList			( SV* device );
 static AV *FileList			( SV* device );
 static SV *DeletePlayList	( SV* device, int plid );
 static SV *GetTrack			( SV* device, SV* hash, char* fname );
 static SV *SendTrack		( SV* device, SV* arglist);
 static SV *SendFile			( SV* device, SV* arglist);
+static SV *GetFile			( SV* device, SV* hash, char* fname );
 static SV *PlayTrack		( SV* device, int trackid );
 static SV *QueueTrack		( SV* device, int trackid );
 static SV *DeleteTrack		( SV* device, int trackid );
@@ -136,7 +137,7 @@ static SV*
 GetTrack (SV* device, SV* hash, char* fname) {
 	songid_t*  tag;
 	njb_t*     njb;
-	int        size;
+	int        size=0;
 	int        trackid;
 	HV*        HV_track_info;
 	SV**       ref;
@@ -147,7 +148,6 @@ GetTrack (SV* device, SV* hash, char* fname) {
 
 	njb = (njb_t*) SvIV( device );
 
-
 	if (SvROK( hash )) {
 		HV_track_info = (HV*) SvRV( hash );
 	}
@@ -156,13 +156,27 @@ GetTrack (SV* device, SV* hash, char* fname) {
 
 	if ( ref ) {
 		tag = (songid_t*) SvIV( *ref );
+		trackid = tag->trid;
+		size = songid_size( tag );
 	} else {
-		printf( "Not a proper hash reference!\n" );
-		return &PL_sv_undef;
+		trackid = SvIV(* hv_fetch( HV_track_info, "ID", 2, 0) );
+		if  ( trackid ) {
+			NJB_Reset_Get_Track_Tag(njb);
+			while ( (tag = NJB_Get_Track_Tag(njb)) ) {
+				if ( tag->trid == trackid ) {
+					size = songid_size( tag );
+				}
+				songid_destroy(tag);
+			}
+			if ( size == 0 ) {
+				printf("failed to find track %d\n",trackid);
+				return &PL_sv_undef;
+			}
+		} else {
+			printf( "Not a proper hash reference, must have TAG or ID in it!\n" );
+			return &PL_sv_undef;
+		}
 	}
-
-	size = songid_size( tag );
-	trackid = tag->trid;
 
 	if ( NJB_Get_Track (njb, trackid, size, fname, progress, NULL) == -1 ) {
 		njb_error_dump( stderr );
@@ -266,6 +280,64 @@ SendFile (SV* device, SV* arglist) {
 	}
 	
 	return result;
+}
+
+/*
+ * Retrieve file <fileid> from the device, and save it
+ * to file <fname>
+*/
+
+static SV*
+GetFile (SV* device, SV* hash, char* fname) {
+	datafile_t*  df;
+	njb_t*     njb;
+	u_int64_t  size=0;
+	u_int32_t  fileid;
+	HV*        HV_track_info;
+	SV**       ref;
+
+	if (SvROK( device )) {
+		device = SvRV( device );
+	}
+
+	njb = (njb_t*) SvIV( device );
+
+	if (SvROK( hash )) {
+		HV_track_info = (HV*) SvRV( hash );
+	}
+
+	ref = hv_fetch( HV_track_info, "TAG", 3, 0);
+
+	if ( ref ) {
+		df = (datafile_t*) SvIV( *ref );
+		fileid = df->dfid;
+		size = datafile_size( df );
+	} else {
+		fileid = SvIV(* hv_fetch( HV_track_info, "ID", 2, 0) );
+		if  ( fileid ) {
+			NJB_Reset_Get_Datafile_Tag(njb);
+			while ( (df = NJB_Get_Datafile_Tag(njb)) ) {
+				if ( df->dfid == fileid ) {
+					size = datafile_size( df );
+				}
+				datafile_destroy(df);
+			}
+			if ( size == 0 ) {
+				printf("failed to find file %d\n",fileid);
+				return &PL_sv_undef;
+			}
+		} else {
+			printf( "Not a proper hash reference, must have TAG or ID in it!\n" );
+			return &PL_sv_undef;
+		}
+	}
+
+	if ( NJB_Get_File (njb, fileid, (u_int32_t) size, fname, progress, NULL) == -1 ) {
+		njb_error_dump( stderr );
+		return &PL_sv_undef;
+	}
+
+	return newSViv( (IV) 1 );
 }
 
 static SV*
@@ -682,6 +754,7 @@ Discover ()
 		devid = newSViv ( (IV) &(njbs[i]) );
 //		type = newSViv ( (IV) njbs[i]->device_type);
 		hv_store (devlist, "DEVID", 5, devid, 0);
+// doesn't work
 //		hv_store (devlist, "TYPE", 4, type, 0);
 	}
 
@@ -694,15 +767,13 @@ Open ( device )
 		RETVAL
 
 void
-TrackList ( device )
+TrackList ( device, extended )
 	SV * device
+	int extended
 	PPCODE:
 	njb_t*     njb;
-//	njbid_t    njbid;
 	int        n, count=0;
 	songid_t*  songtag;
-//	u_int64_t  libcount;
-//	HV*        tracks;
 
 	if (SvROK( device )) {
 		device = SvRV( device );
@@ -713,12 +784,16 @@ TrackList ( device )
 	    XSRETURN(0);
 	}
 
+	if ( extended == 1 ) {
+		// 20 times slower because it gets more tags
+		NJB_Get_Extended_Tags(njb, 1);
+	}
+
 	NJB_Reset_Get_Track_Tag(njb);
 	while ( songtag = NJB_Get_Track_Tag(njb) ) {
 		HV*    HV_track_info;
 		SV*    data;
 		SV*    tag;
-//		char*  key;
 		songid_frame_t*  songinfo;
 		int    i, j;
 
@@ -729,6 +804,7 @@ TrackList ( device )
 		data = newSViv ( (IV) songtag->trid);
 		hv_store (HV_track_info, "ID", 2, data, 0);
 		hv_store (HV_track_info, "TAG", 3, tag, 0);
+// this is set below
 //		hv_store (HV_track_info, "SIZE", 4, newSViv( songid_size( songtag )), 0 );
 		songinfo = songtag->first;
 
@@ -762,6 +838,11 @@ TrackList ( device )
 		}
 
 	}
+
+	// turn it off
+	if ( extended == 1 ) {
+		NJB_Get_Extended_Tags(njb, 0);
+	}
 	XSRETURN(count);
 
 void
@@ -771,7 +852,7 @@ PlayList ( device )
 	njb_t*     njb;
 //	njbid_t    njbid;
 	int        n, count=0;
-	playlist_t*  songtag;
+	playlist_t*  pl;
 
 	if (SvROK( device )) {
 		device = SvRV( device );
@@ -783,11 +864,8 @@ PlayList ( device )
 	}
 
 	NJB_Reset_Get_Playlist(njb);
-	while ( songtag = NJB_Get_Playlist(njb) ) {
+	while ( pl = NJB_Get_Playlist(njb) ) {
 		HV*    HV_playlist_info;
-		SV*    data;
-		SV*    tag;
-//		SV*    state;
 		AV*    AV_tracklist;
 		playlist_track_t*  trackinfo;
 		int    i;
@@ -796,14 +874,12 @@ PlayList ( device )
 		HV_playlist_info = newHV();
 		XPUSHs( newRV_noinc( (SV*) HV_playlist_info));
 		count++;
-		data = newSViv ( (IV) songtag->plid );
-		tag = newSViv ( (IV) songtag );
-//		state = newSViV ( (IV) songtag->_state );
-		hv_store (HV_playlist_info, "ID", 2, data, 0);
-		hv_store (HV_playlist_info, "TAG", 3, tag, 0);
-//		hv_store (HV_playlist_info, "STATE", 5, state, 0);
-		trackinfo = songtag->first;
-		for (i=0; i<songtag->ntracks; i++) {
+		hv_store (HV_playlist_info, "ID", 2, newSViv( (IV) pl->plid ), 0);
+		hv_store (HV_playlist_info, "NAME", 4, newSVpv( pl->name, strlen(pl->name) ), 0);
+		hv_store (HV_playlist_info, "TAG", 3, newSViv( (IV) pl ), 0);
+		hv_store (HV_playlist_info, "STATE", 5, newSViv( (IV) pl->_state), 0);
+		trackinfo = pl->first;
+		for (i=0; i<pl->ntracks; i++) {
 			SV* trackid;
 			
 			trackid = newSViv ( (IV) trackinfo->trackid );
@@ -819,7 +895,6 @@ FileList ( device )
 	SV * device
 	PPCODE:
 	njb_t*     njb;
-//	njbid_t    njbid;
 	int        n, count=0;
 	datafile_t*  datatag;
 
@@ -835,28 +910,17 @@ FileList ( device )
 	NJB_Reset_Get_Datafile_Tag(njb);
 	while ( datatag = NJB_Get_Datafile_Tag(njb) ) {
 		HV*    HV_datafile_info;
-		SV*    dfid;
-		SV*    tag;
-		SV*    timestamp;
-		SV*    msdw;
-		SV*    lsdw;
-		SV*    filename;
 
 		HV_datafile_info = newHV();
 		XPUSHs( newRV_noinc( (SV*) HV_datafile_info));
 		count++;
-		dfid = newSVnv ( (NV) datatag->dfid );
-		timestamp = newSVnv ( (NV) datatag->timestamp );
-		msdw = newSVnv ( (NV) datatag->msdw );
-		lsdw = newSVnv ( (NV) datatag->lsdw );
-		filename = newSVpv ( datatag->filename, 0 );
-		tag = newSViv ( (IV) datatag );
-		hv_store (HV_datafile_info, "ID", 2, dfid, 0);
-		hv_store (HV_datafile_info, "TAG", 3, tag, 0);
-		hv_store (HV_datafile_info, "FILE", 4, filename, 0);
-		hv_store (HV_datafile_info, "LSDW", 4, lsdw, 0);
-		hv_store (HV_datafile_info, "MSDW", 4, msdw, 0);
-		hv_store (HV_datafile_info, "TIMESTAMP", 9, timestamp, 0);
+		
+		hv_store (HV_datafile_info, "ID", 2, newSVnv ( (NV) datatag->dfid ), 0);
+		hv_store (HV_datafile_info, "FILE", 4, newSVpv ( datatag->filename, strlen(datatag->filename) ), 0);
+		hv_store (HV_datafile_info, "SIZE", 4, newSVnv ( (NV) datafile_size(datatag) ), 0);
+		hv_store (HV_datafile_info, "TAG", 3, newSViv ( (IV) datatag ), 0);
+// doesn't work
+//		hv_store (HV_datafile_info, "TIMESTAMP", 9, newSVnv ( (NV) datatag->timestamp ), 0);
 	}
 	XSRETURN(count);
 
@@ -880,6 +944,14 @@ SV*
 SendFile ( device, arglist )
 	SV* device
 	SV* arglist
+	OUTPUT:
+		RETVAL
+
+SV*
+GetFile ( device, hash, fname )
+	SV *   device
+	SV *   hash
+	char * fname;
 	OUTPUT:
 		RETVAL
 

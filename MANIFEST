@@ -6,6 +6,8 @@ NomadJukebox.pm
 NomadJukebox/Device.pm
 NomadJukebox/Device.xs
 examples/files.pl
+examples/getfile.pl
+examples/gettrack.pl
 examples/playlists.pl
 examples/sendfile.pl
 examples/tracks.pl
