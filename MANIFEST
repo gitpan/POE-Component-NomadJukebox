@@ -1,0 +1,12 @@
+Changes
+MANIFEST
+README
+Makefile.PL
+NomadJukebox.pm
+NomadJukebox/Device.pm
+NomadJukebox/Device.xs
+examples/files.pl
+examples/playlists.pl
+examples/sendfile.pl
+examples/tracks.pl
+t/00_compile.t
